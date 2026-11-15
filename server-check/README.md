@@ -13,7 +13,7 @@ Python 3.8+, no dependencies. Windows / Linux / macOS.
    It detects `bf4.exe`, sniffs its UDP traffic for a few seconds, picks the server IP, then tests it.
 
 Options: `--ip 1.2.3.4` (skip detection, no admin needed), `--count 300` (longer test),
-`--process name.exe` (other games), `--sniff 15`, `--no-trace`, `--json out.json`.
+`--process name.exe` (other games), `--sniff 15`, `--no-trace`, `--json out.json`, `--html report.html` (default `gamecheck_report.html`, opens automatically), `--no-html`.
 
 ## What the verdict tells you
 - Router loss/jitter -> your Wi-Fi/LAN. Use Ethernet.

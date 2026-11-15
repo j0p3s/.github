@@ -376,6 +376,115 @@ def hop_test(hops, count=12):
     return results
 
 
+
+# ------------------------------------------------------------ HTML report
+def write_html(path, server, rports, gwd, base, sd, series, tp, mtu, hops, hopres, good, issues):
+    from html import escape as E
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def stat_row(name, d):
+        if not d:
+            return f"<tr><td>{E(name)}</td><td colspan=7>n/a</td></tr>"
+        if not d["received"]:
+            return f"<tr><td>{E(name)}</td><td class=bad colspan=7>no reply</td></tr>"
+        lc = "bad" if d["loss_pct"] >= 2 else "warn" if d["loss_pct"] > 0 else "ok"
+        jc = "bad" if d["jitter"] > 15 else "warn" if d["jitter"] > 8 else "ok"
+        return (f"<tr><td>{E(name)}</td><td class={lc}>{d['loss_pct']:.1f}%</td><td>{d['min']:.0f}</td>"
+                f"<td>{d['avg']:.0f}</td><td>{d['p95']:.0f}</td><td>{d['max']:.0f}</td>"
+                f"<td class={jc}>{d['jitter']:.1f}</td><td>{d['max_loss_burst']}</td></tr>")
+
+    # latency chart (inline SVG); lost packets drawn as red markers on the baseline
+    W, H, P = 900, 240, 36
+    vals = [v for v in series if isinstance(v, float)]
+    svg = ""
+    if vals and series:
+        top = max(50, max(vals) * 1.1)
+        n = len(series)
+        x = lambda i: P + (W - 2 * P) * i / max(1, n - 1)
+        y = lambda v: H - P - (H - 2 * P) * v / top
+        pts, segs, cur = [], [], []
+        for i, v in enumerate(series):
+            if isinstance(v, float):
+                cur.append(f"{x(i):.1f},{y(v):.1f}")
+            elif cur:
+                segs.append(cur); cur = []
+        if cur:
+            segs.append(cur)
+        grid = "".join(f'<line x1="{P}" x2="{W-P}" y1="{y(t):.1f}" y2="{y(t):.1f}" class="grid"/>'
+                       f'<text x="{P-6}" y="{y(t)+4:.1f}" text-anchor="end" class="axis">{t:.0f}</text>'
+                       for t in [top * k / 4 for k in range(5)])
+        lines = "".join(f'<polyline points="{" ".join(s_)}" class="line"/>' for s_ in segs if len(s_) > 1)
+        lost = "".join(f'<line x1="{x(i):.1f}" x2="{x(i):.1f}" y1="{P}" y2="{H-P}" class="lost"/>'
+                       for i, v in enumerate(series) if not isinstance(v, float))
+        svg = (f'<svg viewBox="0 0 {W} {H}" class="chart">{grid}{lost}{lines}'
+               f'<text x="{W/2}" y="{H-6}" text-anchor="middle" class="axis">ping # (red bars = lost packets) &#183; y: ms</text></svg>')
+
+    hop_rows = ""
+    for h, ip in hops:
+        d = hopres.get(h)
+        if not ip:
+            hop_rows += f"<tr><td>{h}</td><td>*</td><td colspan=3 class=dim>no reply</td></tr>"
+        elif d and d["received"]:
+            lc = "bad" if d["loss_pct"] >= 20 else "warn" if d["loss_pct"] > 0 else "ok"
+            hop_rows += (f"<tr><td>{h}</td><td>{ip}</td><td class={lc}>{d['loss_pct']:.0f}%</td>"
+                         f"<td>{d['avg']:.0f}</td><td>{d['max']:.0f}</td></tr>")
+        else:
+            hop_rows += f"<tr><td>{h}</td><td>{ip}</td><td colspan=3 class=dim>ignores ping (usually harmless)</td></tr>"
+
+    tcp_rows = "".join(f"<tr><td>{p}</td><td>{ok}/{n}</td><td>{avg:.0f} ms</td></tr>" for p, (ok, n, avg) in tp.items())
+    status = "bad" if issues else "ok"
+    headline = "Problems detected" if issues else "Connection looks healthy"
+    tiles = ""
+    if sd["received"]:
+        tiles = "".join(f'<div class="tile"><div class="k">{k}</div><div class="v {c}">{v}</div></div>' for k, v, c in [
+            ("Packet loss", f"{sd['loss_pct']:.1f}%", "bad" if sd['loss_pct'] >= 2 else "warn" if sd['loss_pct'] > 0 else "ok"),
+            ("Avg ping", f"{sd['avg']:.0f} ms", "bad" if sd['avg'] > 100 else "warn" if sd['avg'] > 60 else "ok"),
+            ("Jitter", f"{sd['jitter']:.1f} ms", "bad" if sd['jitter'] > 15 else "warn" if sd['jitter'] > 8 else "ok"),
+            ("Worst ping", f"{sd['max']:.0f} ms", "warn" if sd['max'] > 3 * sd['median'] + 20 else "ok"),
+        ])
+    else:
+        tiles = '<div class="tile"><div class="k">Server ping</div><div class="v bad">no reply</div></div>'
+
+    doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Game connection report</title>
+<style>
+:root{{--bg:#fff;--fg:#1c1f24;--mut:#6b7280;--card:#f6f7f9;--bd:#e3e5e9;--ok:#15803d;--warn:#b45309;--bad:#b91c1c;--line:#2563eb}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#14161a;--fg:#e6e8eb;--mut:#9aa1ab;--card:#1e2126;--bd:#2d3138;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--line:#60a5fa}}}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}}
+main{{max-width:960px;margin:0 auto;padding:24px 16px 48px}}
+h1{{font-size:22px;margin:0}}h2{{font-size:16px;margin:28px 0 8px}}
+.sub{{color:var(--mut);font-size:13px}}
+.banner{{margin:16px 0;padding:14px 16px;border-radius:10px;border:1px solid var(--bd);background:var(--card);border-left:6px solid var(--{status});font-weight:600}}
+.tiles{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}}
+.tile{{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px}}
+.k{{color:var(--mut);font-size:12px}}.v{{font-size:24px;font-weight:700}}
+.ok{{color:var(--ok)}}.warn{{color:var(--warn)}}.bad{{color:var(--bad)}}.dim{{color:var(--mut)}}
+table{{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--bd);border-radius:10px;overflow:hidden}}
+th,td{{text-align:left;padding:7px 10px;border-bottom:1px solid var(--bd)}}th{{font-size:12px;color:var(--mut)}}
+.wrap{{overflow-x:auto}}
+.chart{{width:100%;height:auto;background:var(--card);border:1px solid var(--bd);border-radius:10px}}
+.grid{{stroke:var(--bd)}}.axis{{fill:var(--mut);font-size:11px}}.line{{fill:none;stroke:var(--line);stroke-width:1.5}}.lost{{stroke:var(--bad);stroke-width:2;opacity:.7}}
+ul{{padding-left:20px}}li{{margin:4px 0}}
+</style></head><body><main>
+<h1>Game connection report</h1>
+<div class="sub">Server <b>{E(server)}</b>{(' &#183; game port ' + str(rports[0])) if rports else ''} &#183; {now}</div>
+<div class="banner">{headline}</div>
+<div class="tiles">{tiles}</div>
+<h2>Latency over time</h2>{svg or '<p class=dim>No replies to plot.</p>'}
+<h2>Summary (ms)</h2><div class="wrap"><table><tr><th>Target</th><th>Loss</th><th>Min</th><th>Avg</th><th>p95</th><th>Max</th><th>Jitter</th><th>Worst loss burst</th></tr>
+{stat_row('Your router' + (' ' + gwd['ip'] if gwd and 'ip' in gwd else ''), gwd)}
+{''.join(stat_row('Internet ' + ip, d) for ip, d in base.items())}
+{stat_row('Game server ' + server, sd)}</table></div>
+<h2>Findings</h2><ul>{''.join(f'<li class=ok>&#10003; {E(g)}</li>' for g in good)}{''.join(f'<li class=bad>&#9888; {E(i)}</li>' for i in issues)}</ul>
+<h2>Route and per-hop loss</h2>
+{('<div class="wrap"><table><tr><th>Hop</th><th>IP</th><th>Loss</th><th>Avg ms</th><th>Max ms</th></tr>' + hop_rows + '</table></div><p class=sub>Loss on one middle hop that does not continue to later hops is harmless (routers deprioritise ping).</p>') if hops else '<p class=dim>Not run.</p>'}
+<h2>TCP reachability</h2>{('<table><tr><th>Port</th><th>Connects</th><th>Avg</th></tr>' + tcp_rows + '</table>') if tcp_rows else '<p class=dim>No TCP port responded (normal for UDP-only game servers).</p>'}
+<h2>MTU</h2><p>{('Path MTU ~ ' + str(mtu) + (' (OK)' if mtu >= 1500 else ' (below 1500, fragmentation possible)')) if mtu else 'Could not be determined.'}</p>
+</main></body></html>"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(doc)
+
+
 # -------------------------------------------------------------- main flow
 def main():
     ap = argparse.ArgumentParser(description="Find your game server and test your connection to it.")
@@ -384,6 +493,8 @@ def main():
     ap.add_argument("--sniff", type=int, default=8, help="seconds to sniff game traffic (default 8)")
     ap.add_argument("--count", type=int, default=100, help="pings to the server (default 100, ~30s)")
     ap.add_argument("--json", help="also save results to this JSON file")
+    ap.add_argument("--html", default="gamecheck_report.html", help="HTML report path (default gamecheck_report.html)")
+    ap.add_argument("--no-html", action="store_true", help="do not write/open the HTML report")
     ap.add_argument("--no-trace", action="store_true", help="skip traceroute/per-hop test")
     args = ap.parse_args()
 
@@ -410,6 +521,7 @@ def main():
     gwd = None
     if gw:
         gwd, _ = timed_series("Router/gateway (Wi-Fi/LAN quality)", gw, 40, 0.2)
+        gwd["ip"] = gw
     else:
         print("  (could not detect gateway)")
     base = {}
@@ -431,6 +543,7 @@ def main():
 
     hdr("4) TCP REACHABILITY (works even if ICMP is blocked)")
     ports = sorted({p for i, p in tcp_remote if i == server})
+    tp = {}
     tp = tcp_probe(server, ports or [80, 443, 25200, 47200], tries=4)
     if tp:
         for p, (ok, n, avg) in tp.items():
@@ -525,6 +638,15 @@ def main():
         print("\n  => Your connection to this server looks healthy.")
         print("     If you still lag: it may be server tick rate/overload, not your network.")
     print("\n  Tip: for rare spikes run longer:  --count 600 (about 3 minutes) while playing.")
+
+    if not args.no_html:
+        try:
+            write_html(args.html, server, rports, gwd, base, sd, series, tp, mtu, hops, hopres, good, issues)
+            print(f"  HTML report: {args.html}")
+            import webbrowser, os
+            webbrowser.open("file://" + os.path.abspath(args.html))
+        except Exception as e:
+            print(f"  (could not write HTML report: {e})")
 
     if args.json:
         with open(args.json, "w") as f:
